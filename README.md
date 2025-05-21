@@ -1,4 +1,4 @@
-# Internship
+# Plan
 * **Week 1 – Survey Agent Frameworks & Learning**
 
   * *Objective:* Select the agent stack that best fits JCIG-style workflows and learn its basics.
