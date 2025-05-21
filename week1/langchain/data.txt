@@ -1,0 +1,2 @@
+This is a sample knowledge document used for RAG.
+The quick brown fox jumps over the lazy dog.

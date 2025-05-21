@@ -1,0 +1,14 @@
+# Common dependencies
+transformers
+huggingface_hub
+sentence-transformers
+faiss-cpu
+
+# LangChain stack
+langchain
+
+# AutoGen (from Microsoft)
+pyautogen
+
+# CrewAI
+crewai
