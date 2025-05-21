@@ -55,9 +55,3 @@
 
     * PDF report and slide deck.
     * Verification checklist
-
-**Staying on track (bullet recap)**
-
-* Maintain a simple Kanban board each week (Backlog → Doing → Done).
-* Hold a quick weekly kick-off to list tasks and a Friday retro to confirm deliverables.
-* Automate repetitive steps and version everything (data hashes, seeds, environment).
