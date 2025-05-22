@@ -57,4 +57,4 @@ df["doc2_title"] = df["doc2_id"].apply(lambda i: docid_to_title.get(i, ""))
 
 # === Export to CSV ===
 df.to_csv("labeled_pairs_rule_based.csv", index=False)
-print(f"✅ Saved {len(df)} labeled pairs to labeled_pairs_rule_based.csv")
+print(f"Saved {len(df)} labeled pairs to labeled_pairs_rule_based.csv")

@@ -34,7 +34,7 @@ doc2_steps = filter_useful_steps(extract_steps(documents[188]))
 # === Merge & check validity ===
 sentences = doc1_steps + doc2_steps
 if not sentences:
-    raise ValueError("❌ No valid sentences for TF-IDF. Check the step content in docs 21 & 399.")
+    raise ValueError("No valid sentences for TF-IDF. Check the step content in docs 21 & 399.")
 
 # === Vectorize via TF-IDF ===
 vectorizer = TfidfVectorizer(stop_words='english', min_df=1, token_pattern=r"(?u)\b\w+\b")
@@ -68,5 +68,5 @@ nx.draw_networkx_labels(G, pos, labels=labels, font_size=7)
 plt.title("JCIG (Combined + Hamiltonian Path) for Docs 21 & 399")
 # plt.tight_layout()
 plt.savefig("jcig_hp_output.png", dpi=300)
-print("✅ Graph saved as jcig_hp_output.png")
+print("Graph saved as jcig_hp_output.png")
 

@@ -32,6 +32,21 @@ def extract_steps(doc):
                 steps.append(combined)
     return [s for s in steps if len(s.split()) > 2]
 
+# === Build a shared TF-IDF vectorizer ===
+all_sentences = []
+for doc in documents:
+    steps = extract_steps(doc)
+    if steps:
+        all_sentences.extend(steps)
+
+if not all_sentences:
+    raise ValueError("No valid steps extracted from any document — check Appliance.json formatting.")
+
+print(f"Total valid step sentences extracted: {len(all_sentences)}")
+
+vectorizer = TfidfVectorizer(stop_words='english', min_df=1, token_pattern=r"(?u)\b\w+\b")
+vectorizer.fit(all_sentences)
+
 # === Create PyG Data object from doc pair ===
 def create_graph_from_pair(doc1_id, doc2_id, label, vectorizer):
     doc1_steps = extract_steps(documents[doc1_id])
@@ -40,7 +55,7 @@ def create_graph_from_pair(doc1_id, doc2_id, label, vectorizer):
     if not sentences:
         return None
 
-    tfidf = vectorizer.fit_transform(sentences).toarray()
+    tfidf = vectorizer.transform(sentences).toarray()
     sim_matrix = cosine_similarity(tfidf)
 
     nodes = [f"doc1_s{i}" for i in range(len(doc1_steps))] + [f"doc2_s{i}" for i in range(len(doc2_steps))]
@@ -64,7 +79,6 @@ def create_graph_from_pair(doc1_id, doc2_id, label, vectorizer):
     return Data(x=x, edge_index=edge_index, edge_attr=edge_weight, y=y)
 
 # === Create dataset ===
-vectorizer = TfidfVectorizer(stop_words='english', min_df=1, token_pattern=r"(?u)\b\w+\b")
 graph_data = []
 for _, row in tqdm(pairs_df.iterrows(), total=len(pairs_df)):
     g = create_graph_from_pair(row.doc1_id, row.doc2_id, row.label, vectorizer)
@@ -98,7 +112,7 @@ model = GCN(input_dim=train_data[0].x.shape[1], hidden_dim=64).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 loss_fn = torch.nn.BCEWithLogitsLoss()
 
-for epoch in range(1, 11):
+for epoch in range(1, 100):
     model.train()
     total_loss = 0
     for batch in train_loader:
@@ -125,5 +139,4 @@ with torch.no_grad():
         y_pred.extend(preds.cpu().numpy())
 
 acc = accuracy_score(y_true, y_pred)
-print(f"\n✅ Model Accuracy on Test Set: {acc * 100:.2f}%")
-
+print(f"\n Model Accuracy on Test Set: {acc * 100:.2f}%")
