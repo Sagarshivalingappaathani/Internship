@@ -1,17 +1,19 @@
 import json
 import torch
 import torch.nn.functional as F
-from torch_geometric.data import Data, Dataset
+from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.cluster import KMeans
 import pandas as pd
 import networkx as nx
 import numpy as np
 from tqdm import tqdm
+from collections import defaultdict
+from transformers import AutoTokenizer, AutoModel
 
 # === Load dataset ===
 with open("Appliance.json", "r") as f:
@@ -32,48 +34,67 @@ def extract_steps(doc):
                 steps.append(combined)
     return [s for s in steps if len(s.split()) > 2]
 
-# === Build a shared TF-IDF vectorizer ===
-all_sentences = []
-for doc in documents:
-    steps = extract_steps(doc)
-    if steps:
-        all_sentences.extend(steps)
+# === Safe SBERT wrapper ===
+class SBERTEmbedder:
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
 
-if not all_sentences:
-    raise ValueError("No valid steps extracted from any document — check Appliance.json formatting.")
+    def encode(self, sentences):
+        inputs = self.tokenizer(sentences, padding=True, truncation=True, return_tensors="pt")
+        with torch.no_grad():
+            model_output = self.model(**inputs)
+        return self.mean_pooling(model_output, inputs['attention_mask']).cpu().numpy()
 
-print(f"Total valid step sentences extracted: {len(all_sentences)}")
+    def mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output.last_hidden_state
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-vectorizer = TfidfVectorizer(stop_words='english', min_df=1, token_pattern=r"(?u)\b\w+\b")
-vectorizer.fit(all_sentences)
+bert_model = SBERTEmbedder()
 
-# === Create PyG Data object from doc pair ===
-def create_graph_from_pair(doc1_id, doc2_id, label, vectorizer):
+# === Create JCIG Graph with Concept Clustering and D³ via HP ===
+def create_graph_from_pair(doc1_id, doc2_id, label):
     doc1_steps = extract_steps(documents[doc1_id])
     doc2_steps = extract_steps(documents[doc2_id])
     sentences = doc1_steps + doc2_steps
     if not sentences:
         return None
 
-    tfidf = vectorizer.transform(sentences).toarray()
-    sim_matrix = cosine_similarity(tfidf)
+    embeddings = bert_model.encode(sentences)
+    sim_matrix = cosine_similarity(embeddings)
 
-    nodes = [f"doc1_s{i}" for i in range(len(doc1_steps))] + [f"doc2_s{i}" for i in range(len(doc2_steps))]
+    # === Concept Clustering using KMeans (simulate Louvain) ===
+    num_clusters = min(5, len(sentences))
+    kmeans = KMeans(n_clusters=num_clusters, n_init='auto').fit(embeddings)
+    labels = kmeans.labels_
+
+    # Group sentence indices into concept clusters
+    concepts = defaultdict(list)
+    for idx, cluster_id in enumerate(labels):
+        concepts[cluster_id].append(idx)
+
+    concept_nodes = list(concepts.values())
+    concept_embeddings = [np.mean(embeddings[inds], axis=0) for inds in concept_nodes]
+
+    # Build concept similarity matrix
+    concept_sim = cosine_similarity(concept_embeddings)
 
     edge_index = []
     edge_weight = []
+    num_nodes = len(concept_nodes)
 
-    for i in range(len(nodes)):
-        sims = list(enumerate(sim_matrix[i]))
-        sims = sorted([(j, score) for j, score in sims if j != i], key=lambda x: -x[1])
+    for i in range(num_nodes):
+        sims = list(enumerate(concept_sim[i]))
+        sims = sorted([(j, s) for j, s in sims if j != i], key=lambda x: -x[1])
         if sims:
-            j, weight = sims[0]
+            j, score = sims[0]  # Hamiltonian Path style
             edge_index.append([i, j])
-            edge_weight.append(weight)
+            edge_weight.append(score)
 
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     edge_weight = torch.tensor(edge_weight, dtype=torch.float)
-    x = torch.tensor(tfidf, dtype=torch.float)
+    x = torch.tensor(np.array(concept_embeddings), dtype=torch.float)
     y = torch.tensor([label], dtype=torch.float)
 
     return Data(x=x, edge_index=edge_index, edge_attr=edge_weight, y=y)
@@ -81,7 +102,7 @@ def create_graph_from_pair(doc1_id, doc2_id, label, vectorizer):
 # === Create dataset ===
 graph_data = []
 for _, row in tqdm(pairs_df.iterrows(), total=len(pairs_df)):
-    g = create_graph_from_pair(row.doc1_id, row.doc2_id, row.label, vectorizer)
+    g = create_graph_from_pair(row.doc1_id, row.doc2_id, row.label)
     if g:
         graph_data.append(g)
 
@@ -112,7 +133,7 @@ model = GCN(input_dim=train_data[0].x.shape[1], hidden_dim=64).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 loss_fn = torch.nn.BCEWithLogitsLoss()
 
-for epoch in range(1, 100):
+for epoch in range(1, 50):
     model.train()
     total_loss = 0
     for batch in train_loader:
@@ -139,4 +160,4 @@ with torch.no_grad():
         y_pred.extend(preds.cpu().numpy())
 
 acc = accuracy_score(y_true, y_pred)
-print(f"\n Model Accuracy on Test Set: {acc * 100:.2f}%")
+print(f"\n✅ Model Accuracy on Test Set: {acc * 100:.2f}%")
