@@ -7,11 +7,13 @@
     * Build simple project in **LangChain + LangGraph, AutoGen, and CrewAI**.
     * Note **3 strengths & 3 weaknesses** for each stack.
     * Choose the front-runner and Learn it properly.
+    * build simple coding multi agent
   * *Deliverables / checkpoints:*
 
     * Complete comparison table.
     * Runnable demo script for each framework.
     * Decision note in the README.
+    * multi agent code writer agent 
 
 * **Week 2 – Data Collection & Core Utilities**
 
