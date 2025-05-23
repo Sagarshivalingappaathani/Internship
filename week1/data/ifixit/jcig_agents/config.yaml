@@ -1,0 +1,11 @@
+agent_roles:
+  StepExtractorAgent:
+    role: "Extract clear and meaningful steps from procedural JSON"
+  EmbedClusterAgent:
+    role: "Group steps into concept clusters and return cluster-wise embeddings"
+  EdgeBuilderAgent:
+    role: "Add directional weighted edges between concept nodes based on logical flow"
+  GraphBuilderAgent:
+    role: "Assemble a torch_geometric.data.Data graph object from clusters and edges"
+  CriticAgent:
+    role: "Validate final graph and request changes if inconsistencies are found"
