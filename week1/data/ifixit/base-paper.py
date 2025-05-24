@@ -1,27 +1,31 @@
 import json
 import torch
 import torch.nn.functional as F
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, global_mean_pool
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import KMeans
 import pandas as pd
-import networkx as nx
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
-from transformers import AutoTokenizer, AutoModel
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
+from torch_geometric.nn import GCNConv, global_mean_pool
+import networkx as nx
+import spacy
+import pytextrank
 
-# === Load dataset ===
+# === Load spaCy with TextRank ===
+nlp = spacy.load("en_core_web_sm")
+nlp.add_pipe("textrank")
+
+# === Load Dataset ===
 with open("Appliance.json", "r") as f:
     documents = [json.loads(line) for line in f if line.strip()]
-
 pairs_df = pd.read_csv("labeled_pairs_rule_based.csv")
 
-# === Extract cleaned steps ===
+# === Extract steps ===
 def extract_steps(doc):
     steps = []
     for step in doc.get("Steps", []):
@@ -34,84 +38,111 @@ def extract_steps(doc):
                 steps.append(combined)
     return [s for s in steps if len(s.split()) > 2]
 
-# === Safe SBERT wrapper ===
-class SBERTEmbedder:
-    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
+# === Build Global TF-IDF Model ===
+all_sentences = []
+for doc in documents:
+    all_sentences.extend(extract_steps(doc))
+global_tfidf = TfidfVectorizer().fit(all_sentences)
 
-    def encode(self, sentences):
-        inputs = self.tokenizer(sentences, padding=True, truncation=True, return_tensors="pt")
-        with torch.no_grad():
-            model_output = self.model(**inputs)
-        return self.mean_pooling(model_output, inputs['attention_mask']).cpu().numpy()
+# === Extract keywords using TextRank ===
+def extract_keywords(text, top_k=15):
+    doc = nlp(text)
+    return [phrase.text for phrase in doc._.phrases[:top_k]]
 
-    def mean_pooling(self, model_output, attention_mask):
-        token_embeddings = model_output.last_hidden_state
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+# === Build keyword graph ===
+def build_keyword_graph(sentences):
+    G = nx.Graph()
+    for sent in sentences:
+        keywords = extract_keywords(sent)
+        for i in range(len(keywords)):
+            for j in range(i + 1, len(keywords)):
+                G.add_edge(keywords[i], keywords[j])
+    return G
 
-bert_model = SBERTEmbedder()
+# === Community Detection for Concepts ===
+def detect_communities(G):
+    from networkx.algorithms.community import greedy_modularity_communities
+    communities = list(greedy_modularity_communities(G))
+    return [list(c) for c in communities]
 
-# === Create JCIG Graph with Concept Clustering and D³ via HP ===
-def create_graph_from_pair(doc1_id, doc2_id, label):
-    doc1_steps = extract_steps(documents[doc1_id])
-    doc2_steps = extract_steps(documents[doc2_id])
+# === Assign sentences to concept clusters using TF-IDF ===
+def assign_sentences_to_concepts(sentences, concepts, tfidf_model):
+    concept_vectors = []
+    for concept in concepts:
+        joined = " ".join(concept)
+        vec = tfidf_model.transform([joined])
+        concept_vectors.append(vec)
+
+    node_texts = [[] for _ in concepts]
+    for sent in sentences:
+        sent_vec = tfidf_model.transform([sent])
+        best_match = -1
+        best_sim = 0.0
+        for idx, concept_vec in enumerate(concept_vectors):
+            sim = cosine_similarity(sent_vec, concept_vec)[0][0]
+            if sim > 0.2 and sim > best_sim:
+                best_sim = sim
+                best_match = idx
+        if best_match != -1:
+            node_texts[best_match].append(sent)
+
+    return node_texts
+
+# === Create JCIG with Direction ===
+def create_keyword_jcig(doc1_id, doc2_id, label):
+    doc1_steps = [s for s in extract_steps(documents[doc1_id])]
+    doc2_steps = [s for s in extract_steps(documents[doc2_id])]
     sentences = doc1_steps + doc2_steps
     if not sentences:
         return None
 
-    embeddings = bert_model.encode(sentences)
-    sim_matrix = cosine_similarity(embeddings)
+    G = build_keyword_graph(sentences)
+    communities = detect_communities(G)
 
-    # === Concept Clustering using KMeans (simulate Louvain) ===
-    num_clusters = min(5, len(sentences))
-    kmeans = KMeans(n_clusters=num_clusters, n_init='auto').fit(embeddings)
-    labels = kmeans.labels_
+    concept_sentences = assign_sentences_to_concepts(sentences, communities, global_tfidf)
+    concept_vectors = [global_tfidf.transform([" ".join(sents)]) for sents in concept_sentences if sents]
+    node_features = np.vstack([v.toarray() for v in concept_vectors])
 
-    # Group sentence indices into concept clusters
-    concepts = defaultdict(list)
-    for idx, cluster_id in enumerate(labels):
-        concepts[cluster_id].append(idx)
-
-    concept_nodes = list(concepts.values())
-    concept_embeddings = [np.mean(embeddings[inds], axis=0) for inds in concept_nodes]
-
-    # Build concept similarity matrix
-    concept_sim = cosine_similarity(concept_embeddings)
-
+    sim_matrix = cosine_similarity(node_features)
     edge_index = []
     edge_weight = []
-    num_nodes = len(concept_nodes)
+    top_k = 3  # add top-3 strongest outgoing edges per node
 
-    for i in range(num_nodes):
-        sims = list(enumerate(concept_sim[i]))
+    for i in range(len(node_features)):
+        sims = list(enumerate(sim_matrix[i]))
         sims = sorted([(j, s) for j, s in sims if j != i], key=lambda x: -x[1])
-        if sims:
-            j, score = sims[0]  # Hamiltonian Path style
-            edge_index.append([i, j])
+        for j, score in sims[:top_k]:
+            edge_index.append([i, j])  # i → j
             edge_weight.append(score)
 
+    if not edge_index:
+        return None
+
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-    edge_weight = torch.tensor(edge_weight, dtype=torch.float)
-    x = torch.tensor(np.array(concept_embeddings), dtype=torch.float)
-    y = torch.tensor([label], dtype=torch.float)
+    edge_weight = torch.tensor(edge_weight, dtype=torch.float32)
+    x = torch.tensor(node_features, dtype=torch.float32)
+    y = torch.tensor([float(label)], dtype=torch.float32)
 
     return Data(x=x, edge_index=edge_index, edge_attr=edge_weight, y=y)
 
-# === Create dataset ===
-graph_data = []
+# === Dataset creation ===
+jcig_data = []
 for _, row in tqdm(pairs_df.iterrows(), total=len(pairs_df)):
-    g = create_graph_from_pair(row.doc1_id, row.doc2_id, row.label)
+    g = create_keyword_jcig(row.doc1_id, row.doc2_id, row.label)
     if g:
-        graph_data.append(g)
+        jcig_data.append(g)
 
-# === Split ===
-train_data, test_data = train_test_split(graph_data, test_size=0.2, random_state=42)
-train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
-test_loader = DataLoader(test_data, batch_size=16)
+# === 60-20-20 Split ===
+train_size = int(0.6 * len(jcig_data))
+val_size = int(0.2 * len(jcig_data))
+test_size = len(jcig_data) - train_size - val_size
+train_data, val_data, test_data = torch.utils.data.random_split(jcig_data, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(42))
 
-# === Define GCN ===
+train_loader = DataLoader(train_data, batch_size=4, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=4)
+test_loader = DataLoader(test_data, batch_size=4)
+
+# === GCN Model ===
 class GCN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim):
         super(GCN, self).__init__()
@@ -127,8 +158,9 @@ class GCN(torch.nn.Module):
         x = self.lin(x)
         return x
 
-# === Train and evaluate ===
+# === Training and Evaluation ===
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {device}')
 model = GCN(input_dim=train_data[0].x.shape[1], hidden_dim=64).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 loss_fn = torch.nn.BCEWithLogitsLoss()
@@ -146,11 +178,9 @@ for epoch in range(1, 50):
         total_loss += loss.item()
     print(f"Epoch {epoch} - Loss: {total_loss:.4f}")
 
-# === Evaluate ===
+# === Evaluation ===
 model.eval()
-y_true = []
-y_pred = []
-
+y_true, y_pred = [], []
 with torch.no_grad():
     for batch in test_loader:
         batch = batch.to(device)
@@ -160,4 +190,4 @@ with torch.no_grad():
         y_pred.extend(preds.cpu().numpy())
 
 acc = accuracy_score(y_true, y_pred)
-print(f"\n✅ Model Accuracy on Test Set: {acc * 100:.2f}%")
+print(f"\n✅ Directional JCIG Accuracy: {acc * 100:.2f}%")

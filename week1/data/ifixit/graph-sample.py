@@ -28,8 +28,8 @@ def filter_useful_steps(steps):
     return [s for s in steps if len(s.split()) > 2]
 
 # === Get steps from both documents ===
-doc1_steps = filter_useful_steps(extract_steps(documents[64]))
-doc2_steps = filter_useful_steps(extract_steps(documents[188]))
+doc1_steps = filter_useful_steps(extract_steps(documents[21]))
+doc2_steps = filter_useful_steps(extract_steps(documents[399]))
 
 # === Merge & check validity ===
 sentences = doc1_steps + doc2_steps

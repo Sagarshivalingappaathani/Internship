@@ -21,6 +21,7 @@ with open("Appliance.json") as f:
 
 pairs_df = pd.read_csv("labeled_pairs_rule_based.csv")
 
+
 # === Build all graphs ===
 graph_data = []
 

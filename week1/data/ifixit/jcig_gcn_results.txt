@@ -1,0 +1,8 @@
+Fold-wise Accuracies:
+Fold 1: 0.500
+Fold 2: 0.500
+Fold 3: 0.500
+Fold 4: 0.500
+Fold 5: 0.500
+
+Mean Accuracy: 0.500
